@@ -48,6 +48,12 @@
         <option value="name">Name A–Z</option>
       </select>
     </div>
+    <div class="row controls date-filter">
+      <label class="inline">From <input id="date-after" type="date" /></label>
+      <label class="inline">To <input id="date-before" type="date" /></label>
+      <button id="date-clear" class="ghost small">Clear dates</button>
+      <span class="muted">Filters the list, and (if set) limits Delete/Move to emails in this range.</span>
+    </div>
     <table id="senders-table">
       <thead>
         <tr>

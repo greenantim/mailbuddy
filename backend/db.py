@@ -161,8 +161,13 @@ def add_label_locally(ids, label_id):
                 )
 
 
-def sender_summary(search=None, sort="count", limit=500):
-    """Aggregate messages by sender for the dashboard."""
+def sender_summary(search=None, sort="count", limit=500, after_ts=None, before_ts=None):
+    """Aggregate messages by sender for the dashboard.
+
+    after_ts/before_ts (unix seconds) restrict to messages with date_ts within
+    that range (inclusive), so the dashboard can be scoped to e.g. "older than
+    a year" before a bulk cleanup.
+    """
     sql = """
         SELECT
             from_email,
@@ -177,6 +182,12 @@ def sender_summary(search=None, sort="count", limit=500):
     if search:
         sql += " AND (from_email LIKE ? OR from_name LIKE ?)"
         params += [f"%{search}%", f"%{search}%"]
+    if after_ts is not None:
+        sql += " AND date_ts >= ?"
+        params.append(after_ts)
+    if before_ts is not None:
+        sql += " AND date_ts <= ?"
+        params.append(before_ts)
     sql += " GROUP BY from_email"
     order = {
         "count": "count DESC",
@@ -202,9 +213,16 @@ def sender_summary(search=None, sort="count", limit=500):
     return out
 
 
-def message_ids_for_sender(from_email, only_inbox=False):
+def message_ids_for_sender(from_email, only_inbox=False, after_ts=None, before_ts=None):
     sql = "SELECT id, label_ids FROM messages WHERE from_email=?"
-    rows = get_conn().execute(sql, (from_email,)).fetchall()
+    params = [from_email]
+    if after_ts is not None:
+        sql += " AND date_ts >= ?"
+        params.append(after_ts)
+    if before_ts is not None:
+        sql += " AND date_ts <= ?"
+        params.append(before_ts)
+    rows = get_conn().execute(sql, params).fetchall()
     ids = []
     for r in rows:
         if only_inbox and "INBOX" not in (r["label_ids"] or "").split(","):

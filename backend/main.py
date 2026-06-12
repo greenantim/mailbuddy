@@ -1,6 +1,7 @@
 """MailBuddy — local web app to clean up and organize Gmail."""
 
 import os
+from datetime import datetime
 
 from fastapi import FastAPI, Body, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
@@ -66,9 +67,23 @@ def sync_status():
 # --- Senders dashboard ----------------------------------------------------
 
 @app.get("/api/senders")
-def senders(search: str = "", sort: str = "count", limit: int = 500):
-    return {"senders": db.sender_summary(search or None, sort, limit),
+def senders(search: str = "", sort: str = "count", limit: int = 500,
+            after: str = "", before: str = ""):
+    after_ts, before_ts = _parse_date_range(after, before)
+    return {"senders": db.sender_summary(search or None, sort, limit, after_ts, before_ts),
             "total": db.total_count()}
+
+
+def _parse_date_range(after, before):
+    """Parse 'YYYY-MM-DD' query params into unix-second bounds (inclusive)."""
+    after_ts = None
+    before_ts = None
+    if after:
+        after_ts = int(datetime.strptime(after, "%Y-%m-%d").timestamp())
+    if before:
+        # Include the whole end day.
+        before_ts = int(datetime.strptime(before, "%Y-%m-%d").timestamp()) + 86399
+    return after_ts, before_ts
 
 
 @app.post("/api/senders/trash")
@@ -81,6 +96,7 @@ def trash_sender(payload: dict = Body(...)):
     subject = payload.get("subject")
     do_unsub = bool(payload.get("unsubscribe"))
     permanent = bool(payload.get("permanent"))
+    after_ts, before_ts = _parse_date_range(payload.get("after", ""), payload.get("before", ""))
 
     result = {"unsubscribed": None}
 
@@ -88,7 +104,7 @@ def trash_sender(payload: dict = Body(...)):
         result["unsubscribed"] = _do_unsubscribe(from_email)
 
     if from_email:
-        ids = db.message_ids_for_sender(from_email)
+        ids = db.message_ids_for_sender(from_email, after_ts=after_ts, before_ts=before_ts)
     elif subject:
         ids = db.message_ids_for_subject(subject)
     else:
@@ -160,8 +176,9 @@ def move_sender(payload: dict = Body(...)):
     if not from_email or not label_name:
         return JSONResponse({"error": "from_email and label required"}, 400)
 
+    after_ts, before_ts = _parse_date_range(payload.get("after", ""), payload.get("before", ""))
     label_id = gmail.get_or_create_label(label_name)
-    ids = db.message_ids_for_sender(from_email)
+    ids = db.message_ids_for_sender(from_email, after_ts=after_ts, before_ts=before_ts)
     remove = ["INBOX"] if archive else []
     gmail.modify_labels(ids, add=[label_id], remove=remove)
     db.add_label_locally(ids, label_id)

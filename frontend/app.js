@@ -141,11 +141,28 @@ document.querySelectorAll(".tab").forEach((t) => {
 let searchTimer = null;
 $("#search").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadSenders, 250); };
 $("#sort").onchange = loadSenders;
+$("#date-after").onchange = loadSenders;
+$("#date-before").onchange = loadSenders;
+$("#date-clear").onclick = () => {
+  $("#date-after").value = "";
+  $("#date-before").value = "";
+  loadSenders();
+};
+
+// The current date range, included in delete/move requests so bulk actions
+// only touch emails within the filtered range (when a range is set).
+function dateRange() {
+  return { after: $("#date-after").value, before: $("#date-before").value };
+}
 
 async function loadSenders() {
   const search = $("#search").value.trim();
   const sort = $("#sort").value;
-  const { senders } = await api(`/api/senders?search=${encodeURIComponent(search)}&sort=${sort}`);
+  const { after, before } = dateRange();
+  let url = `/api/senders?search=${encodeURIComponent(search)}&sort=${sort}`;
+  if (after) url += `&after=${after}`;
+  if (before) url += `&before=${before}`;
+  const { senders } = await api(url);
   const tbody = $("#senders-table tbody");
   tbody.innerHTML = "";
   $("#senders-empty").classList.toggle("hidden", senders.length > 0);
@@ -156,7 +173,7 @@ async function loadSenders() {
       <td>
         <div class="sender-name">${escapeHtml(s.from_name)}
           ${s.is_vip ? '<span class="badge vip">VIP</span>' : ""}
-          ${s.has_unsub ? '<span class="badge unsub">unsub</span>' : ""}
+          ${s.has_unsub ? '<span class="badge unsub" title="Click to see unsubscribe options">unsub</span>' : ""}
         </div>
         <div class="sender-email">${escapeHtml(s.from_email)}</div>
       </td>
@@ -169,6 +186,8 @@ async function loadSenders() {
       btn("Move", "ghost small", () => openMoveModal(s)),
       btn(s.is_vip ? "★" : "☆", "ghost small", () => toggleVip(s)),
     );
+    const unsubBadge = tr.querySelector(".badge.unsub");
+    if (unsubBadge) unsubBadge.onclick = () => openUnsubModal(s);
     tbody.appendChild(tr);
   }
 }
@@ -182,11 +201,16 @@ function btn(label, cls, onclick) {
 // --- Delete modal ---------------------------------------------------------
 
 function openDeleteModal(s) {
+  const { after, before } = dateRange();
+  const rangeNote = (after || before)
+    ? `<p class="muted">Date filter is active — only emails ${after ? `from ${after} ` : ""}${before ? `through ${before} ` : ""}will be deleted (the count above reflects this).</p>`
+    : "";
   openModal({
     title: `Delete mail from ${s.from_name}`,
     bodyHtml: `
       <p>This will move <strong>${s.count.toLocaleString()}</strong> email(s) from
          <code>${escapeHtml(s.from_email)}</code> to Trash (recoverable for 30 days).</p>
+      ${rangeNote}
       ${s.has_unsub ? `<label class="check"><input type="checkbox" id="opt-unsub" checked> Try to unsubscribe first</label>` : ""}
       <label class="check"><input type="checkbox" id="opt-perm"> Permanently delete instead (irreversible)</label>`,
     confirmLabel: "Delete",
@@ -195,7 +219,7 @@ function openDeleteModal(s) {
       const permanent = $("#opt-perm")?.checked || false;
       const r = await api("/api/senders/trash", {
         method: "POST",
-        body: JSON.stringify({ from_email: s.from_email, unsubscribe, permanent }),
+        body: JSON.stringify({ from_email: s.from_email, unsubscribe, permanent, after, before }),
       });
       let msg = `${permanent ? "Deleted" : "Trashed"} ${r.trashed.toLocaleString()} email(s)`;
       if (r.unsubscribed?.attempted)
@@ -206,12 +230,62 @@ function openDeleteModal(s) {
   });
 }
 
+// --- Unsubscribe modal ------------------------------------------------------
+
+async function openUnsubModal(s) {
+  const { raw, targets } = await api(`/api/senders/unsubscribe-info?from_email=${encodeURIComponent(s.from_email)}`);
+
+  let body = `<p>This sender includes a <code>List-Unsubscribe</code> header — the
+    standard way bulk/marketing senders let mail clients unsubscribe you
+    automatically, without opening their site.</p>`;
+
+  if (targets.http) {
+    body += `<p><strong>One-click link found:</strong><br>
+      <code style="word-break:break-all">${escapeHtml(targets.http)}</code></p>
+      <p class="muted">Clicking "Unsubscribe" below will send a request to this
+      link on your behalf (the same thing Gmail's own "Unsubscribe" button does).
+      It does <em>not</em> delete any emails.</p>`;
+  }
+  if (targets.mailto) {
+    body += `<p><strong>Unsubscribe email address:</strong><br>
+      <code>${escapeHtml(targets.mailto)}</code></p>
+      <p class="muted">Some senders only support unsubscribing by sending an
+      email to this address. MailBuddy can't send mail on your behalf, so
+      you'd need to email this address yourself (often with the subject
+      "unsubscribe").</p>`;
+  }
+  if (!targets.http && !targets.mailto) {
+    body += `<p class="muted">No usable link was found in the header
+      (<code>${escapeHtml(raw || "")}</code>). You may need to unsubscribe from
+      inside one of their emails directly.</p>`;
+  }
+
+  openModal({
+    title: `Unsubscribe from ${s.from_name}`,
+    bodyHtml: body,
+    confirmLabel: targets.http ? "Unsubscribe" : "Close",
+    confirmClass: targets.http ? "" : "ghost",
+    onConfirm: async () => {
+      if (!targets.http) return; // just closes
+      const r = await api("/api/senders/unsubscribe", {
+        method: "POST",
+        body: JSON.stringify({ from_email: s.from_email }),
+      });
+      toast(r.http_ok ? "Unsubscribe request sent" : "Sent, but couldn't confirm success — sender may take a few days");
+    },
+  });
+}
+
 // --- Move modal -----------------------------------------------------------
 
 async function openMoveModal(s) {
   const { labels } = await api("/api/labels");
   const userLabels = labels.filter((l) => l.type === "user");
   const opts = userLabels.map((l) => `<option>${escapeHtml(l.name)}</option>`).join("");
+  const { after, before } = dateRange();
+  const rangeNote = (after || before)
+    ? `<p class="muted">Date filter is active — only emails ${after ? `from ${after} ` : ""}${before ? `through ${before} ` : ""}will be moved.</p>`
+    : "";
   openModal({
     title: `Move mail from ${s.from_name}`,
     bodyHtml: `
@@ -219,7 +293,8 @@ async function openMoveModal(s) {
       <input id="move-label" list="label-list" placeholder="Type a new or existing folder" />
       <datalist id="label-list">${opts}</datalist>
       <label class="check"><input type="checkbox" id="move-archive" checked> Remove from Inbox (archive)</label>
-      <label class="check"><input type="checkbox" id="move-rule"> Auto-create a rule for future mail</label>`,
+      <label class="check"><input type="checkbox" id="move-rule"> Auto-create a rule for future mail</label>
+      ${rangeNote}`,
     confirmLabel: "Move",
     confirmClass: "",
     onConfirm: async () => {
@@ -231,6 +306,7 @@ async function openMoveModal(s) {
           from_email: s.from_email, label,
           archive: $("#move-archive").checked,
           make_rule: $("#move-rule").checked,
+          after, before,
         }),
       });
       toast(`Moved ${r.moved.toLocaleString()} email(s)${r.rule_created ? " · rule created" : ""}`);

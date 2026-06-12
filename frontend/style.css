@@ -75,6 +75,11 @@ tbody tr:hover { background: #fafbfc; }
 .badge.unsub { background: #e7f0ff; color: var(--accent); }
 
 .controls { margin-bottom: 12px; }
+.date-filter { flex-wrap: wrap; }
+.date-filter label.inline { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.date-filter input[type="date"] { padding: 6px 8px; }
+.badge.unsub { cursor: pointer; }
+.badge.unsub:hover { background: #d8e6ff; }
 .progress { height: 6px; background: #eef1f6; border-radius: 999px; margin-top: 12px; overflow: hidden; }
 .progress > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
 
