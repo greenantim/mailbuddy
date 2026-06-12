@@ -252,6 +252,11 @@ def total_count():
     return get_conn().execute("SELECT COUNT(*) c FROM messages").fetchone()["c"]
 
 
+def max_date_ts():
+    row = get_conn().execute("SELECT MAX(date_ts) m FROM messages").fetchone()
+    return row["m"] or 0
+
+
 # --- VIPs ---
 
 def add_vip(email, name=None):

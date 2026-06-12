@@ -8,6 +8,7 @@ Designed for tens of thousands of messages:
 
 import threading
 import time
+from datetime import datetime, timedelta
 
 from . import db, gmail
 
@@ -41,13 +42,25 @@ def _run(full=False):
         except Exception:
             _state["total"] = 0
 
+        # Decide the mode:
+        #  * full=True            -> re-fetch everything from scratch
+        #  * first/partial sync   -> page through everything (resumable)
+        #  * already complete     -> incremental: only mail newer than what we
+        #                            have, via a Gmail date query (fast)
+        query = None
         page_token = None if full else db.get_meta("sync_page_token")
-        # If resuming a finished sync, start fresh from the top to catch new mail.
         if db.get_meta("sync_complete") == "1" and not full:
             page_token = None
+            newest = db.max_date_ts()
+            if newest:
+                # Gmail's after: is day-granular; back up a day to avoid gaps.
+                day = datetime.utcfromtimestamp(newest) - timedelta(days=1)
+                query = f"after:{day.strftime('%Y/%m/%d')}"
 
         while True:
-            ids, next_token, _est = gmail.list_message_ids(page_token=page_token)
+            ids, next_token, _est = gmail.list_message_ids(
+                page_token=page_token, query=query
+            )
             if ids:
                 rows = gmail.fetch_metadata(ids)
                 if rows:

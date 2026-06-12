@@ -13,11 +13,12 @@ from . import auth
 
 # Gmail caps batch modify/delete at 1000 ids per call.
 BATCH_MODIFY_LIMIT = 1000
-# Metadata fetch batches — keep modest to stay friendly with rate limits.
-# A metadata get costs 5 quota units; 50 per batch ~= 250 units, around Gmail's
-# per-second per-user budget, so we also pace batches (see PACE_SECONDS).
-METADATA_BATCH = 50
-PACE_SECONDS = 0.6  # brief pause between metadata batches to avoid throttling
+# Metadata fetch tuning. A metadata get costs 5 quota units and Gmail allows
+# ~250 units/user/second, i.e. ~50 message fetches/second. We send larger HTTP
+# batches (fewer round-trips) but pace to TARGET_MSGS_PER_SEC so we run just
+# under the ceiling instead of overshooting, getting throttled, and stalling.
+METADATA_BATCH = 100
+TARGET_MSGS_PER_SEC = 45
 
 _service = None
 
@@ -140,10 +141,12 @@ def _fetch_batch(svc, chunk):
 
 
 def fetch_metadata(ids):
-    """Fetch metadata for many ids, pacing batches and retrying throttled ids."""
+    """Fetch metadata for many ids, retrying throttled ids and pacing to a
+    target rate so we stay just under Gmail's per-user quota."""
     svc = service()
     results = []
     for chunk in _chunks(ids, METADATA_BATCH):
+        start = time.monotonic()
         pending = list(chunk)
         backoff = 2.0
         while pending:
@@ -153,7 +156,12 @@ def fetch_metadata(ids):
                 time.sleep(backoff + random.random())
                 backoff = min(backoff * 2, 64)
             pending = retry_ids
-        time.sleep(PACE_SECONDS)
+        # Pace to the target rate: only sleep if the fetch itself was faster
+        # than our quota budget for this many messages.
+        budget = len(chunk) / TARGET_MSGS_PER_SEC
+        elapsed = time.monotonic() - start
+        if elapsed < budget:
+            time.sleep(budget - elapsed)
     return results
 
 
