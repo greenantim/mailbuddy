@@ -87,7 +87,12 @@ function renderSync(s) {
     prog.classList.remove("hidden");
     const pct = sy.total ? Math.min(100, Math.round((sy.fetched / sy.total) * 100)) : 0;
     prog.firstElementChild.style.width = pct + "%";
-    $("#sync-detail").textContent = ` · syncing ${sy.fetched.toLocaleString()} / ${(sy.total||0).toLocaleString()}`;
+    const phaseLabel = {
+      inbox: "syncing Inbox first…",
+      all: "backfilling full mailbox…",
+      incremental: "checking for new mail…",
+    }[sy.phase] || "syncing…";
+    $("#sync-detail").textContent = ` · ${phaseLabel} ${sy.fetched.toLocaleString()} / ${(sy.total||0).toLocaleString()}`;
     $("#btn-sync").disabled = true;
   } else {
     $("#btn-sync").disabled = false;
@@ -96,12 +101,28 @@ function renderSync(s) {
   }
 }
 
+let lastPhase = null;
+let pollTicks = 0;
 async function pollSync() {
   const sy = await api("/api/sync");
   const s = { cached_messages: sy.fetched, sync: sy, sync_complete: sy.done };
   renderSync(s);
-  if (!sy.running) {
+  if (sy.running) {
+    pollTicks++;
+    // Refresh the dashboard live as data streams in: immediately on a phase
+    // change (inbox -> full-mailbox handoff), and periodically during long
+    // phases so newly-discovered senders/counts show up.
+    if (sy.phase !== lastPhase) {
+      if (lastPhase === "inbox") toast("Inbox synced — refining as the rest of your mailbox loads…");
+      lastPhase = sy.phase;
+      loadSenders();
+    } else if (pollTicks % 8 === 0) {
+      loadSenders();
+    }
+  } else {
     clearInterval(SYNC_POLL); SYNC_POLL = null;
+    lastPhase = null;
+    pollTicks = 0;
     loadSenders();
     if (sy.done) toast("Sync complete");
   }
