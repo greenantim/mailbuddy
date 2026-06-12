@@ -1,22 +1,50 @@
 """Thin wrapper around the Gmail API plus the bulk operations MailBuddy needs."""
 
-import base64
+import random
 import re
+import time
 import urllib.request
 from email.utils import parseaddr, parsedate_to_datetime
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from googleapiclient.http import BatchHttpRequest
 
 from . import auth
 
 # Gmail caps batch modify/delete at 1000 ids per call.
 BATCH_MODIFY_LIMIT = 1000
 # Metadata fetch batches — keep modest to stay friendly with rate limits.
+# A metadata get costs 5 quota units; 50 per batch ~= 250 units, around Gmail's
+# per-second per-user budget, so we also pace batches (see PACE_SECONDS).
 METADATA_BATCH = 50
+PACE_SECONDS = 0.6  # brief pause between metadata batches to avoid throttling
 
 _service = None
+
+
+def _is_rate_limit(exc):
+    if not isinstance(exc, HttpError):
+        return False
+    if exc.resp.status not in (403, 429):
+        return False
+    body = (exc.content or b"").decode("utf-8", "ignore").lower()
+    return "ratelimitexceeded" in body or "userratelimitexceeded" in body or (
+        "quota exceeded" in body
+    )
+
+
+def _execute(request, max_retries=7):
+    """Execute an API request, retrying on rate-limit errors with backoff."""
+    delay = 2.0
+    for attempt in range(max_retries):
+        try:
+            return request.execute()
+        except HttpError as e:
+            if _is_rate_limit(e) and attempt < max_retries - 1:
+                time.sleep(delay + random.random())
+                delay = min(delay * 2, 64)
+                continue
+            raise
 
 
 def service():
@@ -44,7 +72,7 @@ def list_message_ids(page_token=None, query=None, page_size=500):
         params["pageToken"] = page_token
     if query:
         params["q"] = query
-    resp = svc.users().messages().list(**params).execute()
+    resp = _execute(svc.users().messages().list(**params))
     ids = [m["id"] for m in resp.get("messages", [])]
     return ids, resp.get("nextPageToken"), resp.get("resultSizeEstimate")
 
@@ -79,33 +107,58 @@ def _parse_message(msg):
     }
 
 
-def fetch_metadata(ids):
-    """Fetch metadata for many ids using Gmail batch requests."""
-    svc = service()
+def _fetch_batch(svc, chunk):
+    """Fetch one batch of message metadata. Returns (parsed_rows, rate_limited_ids).
+
+    Individual sub-requests that hit a rate limit are reported back so the
+    caller can retry just those ids; other failures (e.g. a message deleted in
+    the meantime) are skipped.
+    """
     results = []
+    retry_ids = []
 
     def _cb(request_id, response, exception):
         if exception is not None:
-            return  # skip individual failures (e.g. message deleted meanwhile)
+            if _is_rate_limit(exception):
+                retry_ids.append(request_id)  # request_id == message id (set below)
+            return
         results.append(_parse_message(response))
 
+    batch = svc.new_batch_http_request(callback=_cb)
+    for mid in chunk:
+        batch.add(
+            svc.users().messages().get(
+                userId="me",
+                id=mid,
+                format="metadata",
+                metadataHeaders=["From", "Subject", "Date", "List-Unsubscribe"],
+            ),
+            request_id=mid,
+        )
+    _execute(batch)  # whole-batch rate limits are retried with backoff here
+    return results, retry_ids
+
+
+def fetch_metadata(ids):
+    """Fetch metadata for many ids, pacing batches and retrying throttled ids."""
+    svc = service()
+    results = []
     for chunk in _chunks(ids, METADATA_BATCH):
-        batch = svc.new_batch_http_request(callback=_cb)
-        for mid in chunk:
-            batch.add(
-                svc.users().messages().get(
-                    userId="me",
-                    id=mid,
-                    format="metadata",
-                    metadataHeaders=["From", "Subject", "Date", "List-Unsubscribe"],
-                )
-            )
-        batch.execute()
+        pending = list(chunk)
+        backoff = 2.0
+        while pending:
+            rows, retry_ids = _fetch_batch(svc, pending)
+            results.extend(rows)
+            if retry_ids:
+                time.sleep(backoff + random.random())
+                backoff = min(backoff * 2, 64)
+            pending = retry_ids
+        time.sleep(PACE_SECONDS)
     return results
 
 
 def profile_total():
-    return service().users().getProfile(userId="me").execute().get("messagesTotal", 0)
+    return _execute(service().users().getProfile(userId="me")).get("messagesTotal", 0)
 
 
 # --- Bulk actions ---------------------------------------------------------
@@ -114,17 +167,17 @@ def trash_messages(ids):
     """Move messages to Trash (recoverable for 30 days). Batched."""
     svc = service()
     for chunk in _chunks(ids, BATCH_MODIFY_LIMIT):
-        svc.users().messages().batchModify(
+        _execute(svc.users().messages().batchModify(
             userId="me", body={"ids": chunk, "addLabelIds": ["TRASH"],
                                 "removeLabelIds": ["INBOX", "UNREAD"]}
-        ).execute()
+        ))
 
 
 def delete_messages_permanent(ids):
     """Permanently delete. Irreversible. Requires full mail scope."""
     svc = service()
     for chunk in _chunks(ids, BATCH_MODIFY_LIMIT):
-        svc.users().messages().batchDelete(userId="me", body={"ids": chunk}).execute()
+        _execute(svc.users().messages().batchDelete(userId="me", body={"ids": chunk}))
 
 
 def modify_labels(ids, add=None, remove=None):
@@ -135,16 +188,16 @@ def modify_labels(ids, add=None, remove=None):
     if remove:
         body["removeLabelIds"] = remove
     for chunk in _chunks(ids, BATCH_MODIFY_LIMIT):
-        svc.users().messages().batchModify(
+        _execute(svc.users().messages().batchModify(
             userId="me", body={"ids": chunk, **body}
-        ).execute()
+        ))
 
 
 # --- Labels (folders) -----------------------------------------------------
 
 def list_labels():
     svc = service()
-    labels = svc.users().labels().list(userId="me").execute().get("labels", [])
+    labels = _execute(svc.users().labels().list(userId="me")).get("labels", [])
     # Return user-created labels first, but include all so we can resolve ids.
     return [
         {"id": l["id"], "name": l["name"], "type": l.get("type")}
@@ -156,14 +209,14 @@ def get_or_create_label(name):
     for l in list_labels():
         if l["name"].lower() == name.lower():
             return l["id"]
-    created = service().users().labels().create(
+    created = _execute(service().users().labels().create(
         userId="me",
         body={
             "name": name,
             "labelListVisibility": "labelShow",
             "messageListVisibility": "show",
         },
-    ).execute()
+    ))
     return created["id"]
 
 
@@ -178,7 +231,7 @@ def create_filter_from_sender(from_email, label_id, archive=True):
         "criteria": {"from": from_email},
         "action": {"addLabelIds": add_labels, "removeLabelIds": remove_labels},
     }
-    return svc.users().settings().filters().create(userId="me", body=body).execute()
+    return _execute(svc.users().settings().filters().create(userId="me", body=body))
 
 
 # --- Unsubscribe ----------------------------------------------------------
