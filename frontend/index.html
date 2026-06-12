@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MailBuddy — clean up your Gmail</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>📬 MailBuddy</h1>
+    <div id="status-pill" class="pill">…</div>
+  </header>
+
+  <!-- Setup / auth gate -->
+  <section id="setup" class="card hidden">
+    <h2>Connect your Gmail</h2>
+    <div id="setup-body"></div>
+  </section>
+
+  <!-- Sync controls -->
+  <section id="sync-bar" class="card hidden">
+    <div class="row between">
+      <div>
+        <strong id="sync-count">0</strong> emails cached
+        <span id="sync-detail" class="muted"></span>
+      </div>
+      <div>
+        <button id="btn-sync">Sync mailbox</button>
+        <button id="btn-resync" class="ghost">Full re-sync</button>
+      </div>
+    </div>
+    <div class="progress hidden" id="sync-progress"><div></div></div>
+  </section>
+
+  <nav id="tabs" class="hidden">
+    <button class="tab active" data-tab="senders">Senders</button>
+    <button class="tab" data-tab="vips">VIPs</button>
+  </nav>
+
+  <!-- Senders dashboard -->
+  <section id="tab-senders" class="card hidden">
+    <div class="row between controls">
+      <input id="search" type="search" placeholder="Search senders…" />
+      <select id="sort">
+        <option value="count">Most emails</option>
+        <option value="recent">Most recent</option>
+        <option value="name">Name A–Z</option>
+      </select>
+    </div>
+    <table id="senders-table">
+      <thead>
+        <tr>
+          <th>Sender</th><th class="num">Emails</th><th>Latest</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <p id="senders-empty" class="muted hidden">No data yet — run a sync.</p>
+  </section>
+
+  <!-- VIPs -->
+  <section id="tab-vips" class="card hidden">
+    <h2>VIP senders</h2>
+    <p class="muted">Flag senders as VIP from the Senders tab. New unread mail from
+       them appears here.</p>
+    <button id="btn-vip-refresh">Show new VIP mail</button>
+    <ul id="vip-list"></ul>
+    <h3>New unread from VIPs</h3>
+    <ul id="vip-new"></ul>
+  </section>
+
+  <!-- Action modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <h3 id="modal-title"></h3>
+      <div id="modal-body"></div>
+      <div class="row end">
+        <button id="modal-cancel" class="ghost">Cancel</button>
+        <button id="modal-confirm" class="danger">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
