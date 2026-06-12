@@ -35,6 +35,14 @@ REDIRECT_URI = os.environ.get(
     "MAILBUDDY_REDIRECT", "http://localhost:8000/api/auth/callback"
 )
 
+# oauthlib refuses plain http by default. For a purely local app served on
+# http://localhost this is safe — the browser and server are on the same
+# machine — so we allow insecure transport for localhost redirects only.
+if REDIRECT_URI.startswith("http://localhost") or REDIRECT_URI.startswith(
+    "http://127.0.0.1"
+):
+    os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
+
 
 def credentials_present():
     return os.path.exists(CREDENTIALS_PATH)
