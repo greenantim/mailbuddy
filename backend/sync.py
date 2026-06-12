@@ -68,6 +68,11 @@ def _run(full=False):
         except Exception:
             _set(total=0)
 
+        try:
+            db.set_labels(gmail.list_labels())
+        except Exception:
+            pass
+
         if full:
             # Full re-fetch of everything, from scratch.
             db.set_meta("sync_inbox_complete", "")

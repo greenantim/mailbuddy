@@ -206,6 +206,7 @@ async function loadSenders() {
       </td>
       <td class="num">${s.count.toLocaleString()}</td>
       <td>${fmtDate(s.last_ts)}</td>
+      <td>${s.folder === "Inbox" ? '<span class="muted">Inbox</span>' : escapeHtml(s.folder)}</td>
       <td></td>`;
     const actions = tr.lastElementChild;
     actions.append(

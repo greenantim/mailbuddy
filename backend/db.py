@@ -86,6 +86,14 @@ def init_db():
                 name      TEXT,
                 hidden_at INTEGER
             );
+
+            -- Cache of Gmail labels (folders), so we can show the folder a
+            -- sender's mail lives in without an API call per page load.
+            CREATE TABLE IF NOT EXISTS labels (
+                id   TEXT PRIMARY KEY,
+                name TEXT,
+                type TEXT
+            );
             """
         )
 
@@ -185,8 +193,11 @@ def sender_summary(search=None, sort="count", limit=500, after_ts=None,
             MAX(from_name)                  AS from_name,
             COUNT(*)                        AS count,
             MAX(date_ts)                    AS last_ts,
-            MAX(list_unsub IS NOT NULL AND list_unsub != '') AS has_unsub
-        FROM messages
+            MAX(list_unsub IS NOT NULL AND list_unsub != '') AS has_unsub,
+            (SELECT m2.label_ids FROM messages m2
+              WHERE m2.from_email = m.from_email
+              ORDER BY m2.date_ts DESC LIMIT 1)  AS latest_labels
+        FROM messages m
         WHERE from_email IS NOT NULL AND from_email != ''
     """
     params = []
@@ -212,6 +223,7 @@ def sender_summary(search=None, sort="count", limit=500, after_ts=None,
 
     vips = {r["email"] for r in get_conn().execute("SELECT email FROM vips")}
     hidden = {r["email"] for r in get_conn().execute("SELECT email FROM hidden_senders")}
+    label_map = get_label_map()
     out = []
     for r in get_conn().execute(sql, params):
         out.append(
@@ -223,6 +235,7 @@ def sender_summary(search=None, sort="count", limit=500, after_ts=None,
                 "has_unsub": bool(r["has_unsub"]),
                 "is_vip": r["from_email"] in vips,
                 "is_hidden": r["from_email"] in hidden,
+                "folder": _folder_for_labels(r["latest_labels"], label_map),
             }
         )
     return out
@@ -284,6 +297,49 @@ def unsub_for_sender(from_email):
         (from_email,),
     ).fetchone()
     return row["list_unsub"] if row else None
+
+
+def set_labels(labels):
+    """Replace the cached label id -> name/type map (called after sync)."""
+    with write() as conn:
+        conn.execute("DELETE FROM labels")
+        conn.executemany(
+            "INSERT INTO labels(id, name, type) VALUES(:id, :name, :type)", labels
+        )
+
+
+def get_label_map():
+    return {
+        r["id"]: {"name": r["name"], "type": r["type"]}
+        for r in get_conn().execute("SELECT id, name, type FROM labels")
+    }
+
+
+# System labels that don't represent a user-organized "folder".
+_NON_FOLDER_LABELS = {
+    "INBOX", "UNREAD", "STARRED", "IMPORTANT", "SENT", "DRAFT", "SPAM",
+    "TRASH", "CHAT",
+}
+
+
+def _folder_for_labels(label_ids_csv, label_map):
+    """Pick a human folder name for a message's label set: prefer a
+    user-created label, fall back to Inbox, else Archived."""
+    if not label_ids_csv:
+        return "—"
+    ids = label_ids_csv.split(",")
+    user_labels = [
+        label_map[i]["name"]
+        for i in ids
+        if i in label_map and label_map[i]["type"] == "user"
+    ]
+    if user_labels:
+        return ", ".join(sorted(user_labels))
+    if "INBOX" in ids:
+        return "Inbox"
+    if any(i.startswith("CATEGORY_") for i in ids):
+        return "Inbox"
+    return "Archived"
 
 
 def total_count():

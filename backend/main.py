@@ -184,7 +184,9 @@ def create_label(payload: dict = Body(...)):
     name = (payload.get("name") or "").strip()
     if not name:
         return JSONResponse({"error": "name required"}, 400)
-    return {"id": gmail.get_or_create_label(name), "name": name}
+    label_id = gmail.get_or_create_label(name)
+    db.set_labels(gmail.list_labels())
+    return {"id": label_id, "name": name}
 
 
 @app.post("/api/senders/move")
@@ -201,6 +203,7 @@ def move_sender(payload: dict = Body(...)):
 
     after_ts, before_ts = _parse_date_range(payload.get("after", ""), payload.get("before", ""))
     label_id = gmail.get_or_create_label(label_name)
+    db.set_labels(gmail.list_labels())
     ids = db.message_ids_for_sender(from_email, after_ts=after_ts, before_ts=before_ts)
     remove = ["INBOX"] if archive else []
     gmail.modify_labels(ids, add=[label_id], remove=remove)
