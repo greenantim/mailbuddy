@@ -169,6 +169,7 @@ $("#date-clear").onclick = () => {
   $("#date-before").value = "";
   loadSenders();
 };
+$("#show-hidden").onchange = loadSenders;
 
 // The current date range, included in delete/move requests so bulk actions
 // only touch emails within the filtered range (when a range is set).
@@ -183,7 +184,11 @@ async function loadSenders() {
   let url = `/api/senders?search=${encodeURIComponent(search)}&sort=${sort}`;
   if (after) url += `&after=${after}`;
   if (before) url += `&before=${before}`;
-  const { senders } = await api(url);
+  const includeHidden = $("#show-hidden").checked;
+  if (includeHidden) url += `&include_hidden=true`;
+  const { senders, hidden_count } = await api(url);
+
+  $("#hidden-count").textContent = hidden_count ? `(${hidden_count})` : "";
   const tbody = $("#senders-table tbody");
   tbody.innerHTML = "";
   $("#senders-empty").classList.toggle("hidden", senders.length > 0);
@@ -194,6 +199,7 @@ async function loadSenders() {
       <td>
         <div class="sender-name">${escapeHtml(s.from_name)}
           ${s.is_vip ? '<span class="badge vip">VIP</span>' : ""}
+          ${s.is_hidden ? '<span class="badge">hidden</span>' : ""}
           ${s.has_unsub ? '<span class="badge unsub" title="Click to see unsubscribe options">unsub</span>' : ""}
         </div>
         <div class="sender-email">${escapeHtml(s.from_email)}</div>
@@ -206,11 +212,32 @@ async function loadSenders() {
       btn("Delete", "danger small", () => openDeleteModal(s)),
       btn("Move", "ghost small", () => openMoveModal(s)),
       btn(s.is_vip ? "★" : "☆", "ghost small", () => toggleVip(s)),
+      s.is_hidden
+        ? btn("Unhide", "ghost small", () => unhideSender(s))
+        : btn("Hide", "ghost small", () => hideSender(s)),
     );
     const unsubBadge = tr.querySelector(".badge.unsub");
     if (unsubBadge) unsubBadge.onclick = () => openUnsubModal(s);
     tbody.appendChild(tr);
   }
+}
+
+async function hideSender(s) {
+  await api("/api/senders/hide", {
+    method: "POST",
+    body: JSON.stringify({ from_email: s.from_email, name: s.from_name }),
+  });
+  toast(`Hid ${s.from_name} — tick "Show hidden" to bring it back`);
+  loadSenders();
+}
+
+async function unhideSender(s) {
+  await api("/api/senders/unhide", {
+    method: "POST",
+    body: JSON.stringify({ from_email: s.from_email }),
+  });
+  toast(`Unhid ${s.from_name}`);
+  loadSenders();
 }
 
 function btn(label, cls, onclick) {

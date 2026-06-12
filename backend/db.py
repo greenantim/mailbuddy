@@ -79,6 +79,13 @@ def init_db():
                 email TEXT PRIMARY KEY,
                 name  TEXT
             );
+
+            -- Senders the user has dismissed from the triage list ("handled").
+            CREATE TABLE IF NOT EXISTS hidden_senders (
+                email     TEXT PRIMARY KEY,
+                name      TEXT,
+                hidden_at INTEGER
+            );
             """
         )
 
@@ -161,12 +168,16 @@ def add_label_locally(ids, label_id):
                 )
 
 
-def sender_summary(search=None, sort="count", limit=500, after_ts=None, before_ts=None):
+def sender_summary(search=None, sort="count", limit=500, after_ts=None,
+                   before_ts=None, include_hidden=False):
     """Aggregate messages by sender for the dashboard.
 
     after_ts/before_ts (unix seconds) restrict to messages with date_ts within
     that range (inclusive), so the dashboard can be scoped to e.g. "older than
     a year" before a bulk cleanup.
+
+    Senders the user has dismissed ("hidden") are excluded unless
+    include_hidden is True, in which case each row carries an is_hidden flag.
     """
     sql = """
         SELECT
@@ -188,6 +199,8 @@ def sender_summary(search=None, sort="count", limit=500, after_ts=None, before_t
     if before_ts is not None:
         sql += " AND date_ts <= ?"
         params.append(before_ts)
+    if not include_hidden:
+        sql += " AND from_email NOT IN (SELECT email FROM hidden_senders)"
     sql += " GROUP BY from_email"
     order = {
         "count": "count DESC",
@@ -198,6 +211,7 @@ def sender_summary(search=None, sort="count", limit=500, after_ts=None, before_t
     params.append(limit)
 
     vips = {r["email"] for r in get_conn().execute("SELECT email FROM vips")}
+    hidden = {r["email"] for r in get_conn().execute("SELECT email FROM hidden_senders")}
     out = []
     for r in get_conn().execute(sql, params):
         out.append(
@@ -208,9 +222,33 @@ def sender_summary(search=None, sort="count", limit=500, after_ts=None, before_t
                 "last_ts": r["last_ts"],
                 "has_unsub": bool(r["has_unsub"]),
                 "is_vip": r["from_email"] in vips,
+                "is_hidden": r["from_email"] in hidden,
             }
         )
     return out
+
+
+# --- Hidden / dismissed senders ---
+
+def hide_sender(email, name=None):
+    import time as _t
+    with write() as conn:
+        conn.execute(
+            "INSERT INTO hidden_senders(email, name, hidden_at) VALUES(?, ?, ?) "
+            "ON CONFLICT(email) DO UPDATE SET name=excluded.name",
+            (email, name, int(_t.time())),
+        )
+
+
+def unhide_sender(email):
+    with write() as conn:
+        conn.execute("DELETE FROM hidden_senders WHERE email=?", (email,))
+
+
+def hidden_count():
+    return get_conn().execute(
+        "SELECT COUNT(*) c FROM hidden_senders"
+    ).fetchone()["c"]
 
 
 def message_ids_for_sender(from_email, only_inbox=False, after_ts=None, before_ts=None):

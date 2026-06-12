@@ -68,10 +68,33 @@ def sync_status():
 
 @app.get("/api/senders")
 def senders(search: str = "", sort: str = "count", limit: int = 500,
-            after: str = "", before: str = ""):
+            after: str = "", before: str = "", include_hidden: bool = False):
     after_ts, before_ts = _parse_date_range(after, before)
-    return {"senders": db.sender_summary(search or None, sort, limit, after_ts, before_ts),
-            "total": db.total_count()}
+    return {
+        "senders": db.sender_summary(
+            search or None, sort, limit, after_ts, before_ts, include_hidden
+        ),
+        "total": db.total_count(),
+        "hidden_count": db.hidden_count(),
+    }
+
+
+@app.post("/api/senders/hide")
+def hide_sender(payload: dict = Body(...)):
+    email = (payload.get("from_email") or "").lower().strip()
+    if not email:
+        return JSONResponse({"error": "from_email required"}, 400)
+    db.hide_sender(email, payload.get("name"))
+    return {"ok": True}
+
+
+@app.post("/api/senders/unhide")
+def unhide_sender(payload: dict = Body(...)):
+    email = (payload.get("from_email") or "").lower().strip()
+    if not email:
+        return JSONResponse({"error": "from_email required"}, 400)
+    db.unhide_sender(email)
+    return {"ok": True}
 
 
 def _parse_date_range(after, before):
@@ -181,13 +204,14 @@ def move_sender(payload: dict = Body(...)):
     ids = db.message_ids_for_sender(from_email, after_ts=after_ts, before_ts=before_ts)
     remove = ["INBOX"] if archive else []
     gmail.modify_labels(ids, add=[label_id], remove=remove)
-    db.add_label_locally(ids, label_id)
-    if archive:
-        db.remove_label_locally(ids, "INBOX")
 
     rule = None
     if make_rule:
         rule = gmail.create_filter_from_sender(from_email, label_id, archive=archive)
+
+    # Drop the moved messages from the local cache so this sender leaves the
+    # triage list (or its count shrinks if only a date-filtered subset moved).
+    db.delete_messages(ids)
 
     return {"moved": len(ids), "label_id": label_id, "rule_created": bool(rule)}
 
